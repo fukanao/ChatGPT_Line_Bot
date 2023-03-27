@@ -36,4 +36,4 @@ LINEでChatGPTのレムと会話するときにubuntuサーバで起動してお
     $ sudo systemctl start remu_line_bot.service
     
     
-## ngrok等でLINE側からhttpsでアクセスできるようにしてください
+- ngrok等でLINE側からhttpsでアクセスできるようにしてください
