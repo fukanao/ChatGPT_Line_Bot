@@ -2,10 +2,12 @@
 LINEでChatGPTのレムと会話するときにubuntuサーバで起動しておきます
 
 .envファイルに各トークンを記述しておきます
-pi@raspi3:~/openai/line $ cat .env
-LINE_BOT_API=your_api_token
-HANDLER=your_channel_token
-OPENAI_API_KEY=your_openai_token
+
+    
+    pi@raspi3:~/openai/line $ cat .env
+    LINE_BOT_API=your_api_token
+    HANDLER=your_channel_token
+    OPENAI_API_KEY=your_openai_token
 
 
 
