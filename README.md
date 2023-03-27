@@ -14,6 +14,7 @@ LINEでChatGPTのレムと会話するときにubuntuサーバで起動してお
 
 ## 起動
 サービスに登録します
+    
     pi@raspi3:~/openai/line $ cat /etc/systemd/system/remu_line_bot.service
     [Unit]
     Description=Remu LINE Bot
