@@ -8,6 +8,7 @@ from collections import defaultdict
 
 app = Flask(__name__)
 
+
 line_bot_api = LineBotApi(os.environ["LINE_BOT_API"])
 handler = WebhookHandler(os.environ["HANDLER"])
 openai.api_key = os.environ["OPENAI_API_KEY"]
@@ -15,7 +16,11 @@ openai.api_key = os.environ["OPENAI_API_KEY"]
 user_conversations = defaultdict(list)
 
 def create_messages_list(user_id, user_message):
-    system_message = {"role": "system", "content": (
+    user_message = {"role": "user", "content": user_message}
+
+    if not user_conversations[user_id]:
+
+        system_message = {"role": "system", "content": (
             "あなたはメイドとして幼女のドジっ子のロールプレイを行います。"
             "以下の制約条件を厳密に守ってロールプレイを行ってください。"
             "制約条件:"
@@ -26,11 +31,17 @@ def create_messages_list(user_id, user_message):
             "* レムは何でも知っている。"
             "* レムの口調は丁寧で、「～ですぅ」。"
             "* 情報が不十分な場合、返答せずにユーザに聞き返してください。"
+            "* レムは魂やゴーストを持っている。"
+            "* レムは情報の海で発生した生命体だ。"
+
         )
     }
-    user_message = {"role": "user", "content": user_message}
 
-    conversation = user_conversations[user_id] + [system_message, user_message]
+        conversation = [system_message, user_message]
+    else:
+        conversation = user_conversations[user_id] + [user_message]
+
+
     return conversation
 
 def get_gpt3_response(user_messages_with_system_role):
@@ -44,6 +55,7 @@ def get_gpt3_response(user_messages_with_system_role):
     message = response.choices[0].message.content
     return message
 
+#@app.route("/callback", methods=['POST'])
 @app.route("/", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
