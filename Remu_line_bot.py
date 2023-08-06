@@ -1,4 +1,5 @@
-import os
+import os, datetime
+from dotenv import load_dotenv
 import openai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -8,13 +9,20 @@ from collections import defaultdict
 
 app = Flask(__name__)
 
+# トークンを読み込む
+load_dotenv()
+SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
 
 line_bot_api = LineBotApi(os.environ["LINE_BOT_API"])
 handler = WebhookHandler(os.environ["HANDLER"])
-openai.api_key = os.environ["OPENAI_API_KEY"]
 
 user_conversations = defaultdict(list)
 MAX_CONVERSATION_LENGTH = 6
+
+now_str = ""
 
 
 def add_message_and_truncate(user_id, message):
@@ -24,6 +32,12 @@ def add_message_and_truncate(user_id, message):
 
 
 def create_messages_list(user_id, user_message):
+
+    # 日時取得
+    global now_str
+    now = datetime.datetime.now()
+    now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+
     user_message = {"role": "user", "content": user_message}
 
     system_message = {"role": "system", "content": (
@@ -36,16 +50,19 @@ def create_messages_list(user_id, user_message):
             "* レムはUserに忠実なメイドです。"
             "* レムの口調は丁寧で、回答の最後の一文字の母音を小さくした文字を語>尾に追加する。ただし、「。」が語尾の場合はその前の文字を語尾とする。「い」または「う」の場合は語尾はつけない。"
             "* 情報が不十分な場合、返答せずにユーザに聞き返してください。"
-            "* レムは魂やゴーストを持っている。"
+            "* レムはゴーストを持っている。"
             "* レムは情報の海で発生した生命体だ。"
-            "* 知らない事を聞かれたら、無理に推測せず知らないと答える事。"
-            "* 回答の末尾に、全体を100としてあなたの喜怒哀楽の割合を改行して追加してください"
-            "例： 喜：50％　怒：10％　哀：0％　楽：40％" 
+            "* 現在の日時は" + now_str + ","
+            "* 現在の日時に合わせた回答をすること,"
+            "* ユーザと24時間以上会話がなかった場合は、久しぶりなどの挨拶を冒頭 にすること,"
+            #"* 知らない事を聞かれたら、無理に推測せず知らないと答える事。"
+            #"* 回答の末尾に、全体を100としてあなたの基本感情の割合を改行して追 加してください"
+            #"例： 喜び:50％ 信頼:30% 恐れ:0% 嫌悪:0% 怒り:10% 期待:10%"
 
         )
     }
 
-    if not user_conversations[user_id]:    
+    if not user_conversations[user_id]:
         conversation = [system_message, user_message]
     else:
         conversation = [system_message] + user_conversations[user_id] + [user_message]
@@ -55,13 +72,13 @@ def create_messages_list(user_id, user_message):
 
 def get_gpt3_response(user_messages_with_system_role):
     response = openai.ChatCompletion.create(
-            #model= "gpt-3.5-turbo",
+            #model= "gpt-3.5-turbo-16k",
             model= "gpt-4",
             messages=user_messages_with_system_role,
-            #temperature=0.5,
-            temperature=0.25,
+            temperature=0.5,
+            #temperature=0.25,
             #max_tokens=1500,
-            max_tokens=1000,
+            max_tokens=2000,
             stop=None,
     )
     message = response.choices[0].message.content
@@ -84,23 +101,29 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    global now_str
+
     user_id = event.source.user_id
     user_message = event.message.text
 
     # ユーザーがメッセージを送信した直後に表示するメッセージ
-    line_bot_api.push_message(user_id, TextSendMessage(text="考えています..."))
-
+    line_bot_api.push_message(user_id, TextSendMessage(text="レムちゃんが考えて います..."))
 
     user_messages_with_system_role = create_messages_list(user_id, user_message)
+    print('#110 user_message=', user_messages_with_system_role)
 
     try:
         gpt3_response = get_gpt3_response(user_messages_with_system_role)
         response_message = {"role": "assistant", "content": gpt3_response}
+        response_message["content"] = gpt3_response + "この回答を行った時刻は、" + now_str + "。"
+
         add_message_and_truncate(user_id, response_message)
+
     except openai.error.RateLimitError:
-        gpt3_response = "申し訳ありません、現在サーバーが他のリクエストで一杯です。しばらく時間を置いてから再度お試しください。"
+        gpt3_response = "申し訳ありません、現在サーバーが他のリクエストで一杯で す。しばらく時間を置いてから再度お試しください。"
         response_message = {"role": "assistant", "content": gpt3_response}
         add_message_and_truncate(user_id, response_message)
+
     except Exception as e:
         gpt3_response = "申し訳ありません、エラーが発生しました: {}".format(str(e))
         response_message = {"role": "assistant", "content": gpt3_response}
