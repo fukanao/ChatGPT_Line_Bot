@@ -38,3 +38,17 @@ LINEでChatGPTのレムと会話するときにubuntuサーバで起動してお
     
     
 - ngrok等でLINE側からhttpsでアクセスできるようにしてください
+## ngrok-line サービス
+    [Unit]
+    Description=ngrok-line Script
+    
+    [Service]
+    ExecStart=/usr/bin/python3 /your_path/ngrok-line.py
+    User=user_name
+    Group=user_name
+    WorkingDirectory=/your_path/ngrok_line
+    Restart=always
+    RestartSec=10
+
+    [Install]
+    WantedBy=multi-user.target
