@@ -1,5 +1,6 @@
 # ChatGPT_Line_Bot
-LINEでChatGPTのレムと会話するときにubuntuサーバで起動しておきます
+LINEでChatGPTを使用します。
+ubuntuサーバで起動しておきます
 
 .envファイルに各トークンを記述しておきます
 
