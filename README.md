@@ -1,3 +1,5 @@
+# 20240402 Openai AssistantAPIに対応しました
+
 # ChatGPT_Line_Bot
 LINEでChatGPTを使用します。
 ubuntuサーバで起動しておきます
@@ -7,8 +9,8 @@ ubuntuサーバで起動しておきます
     
     pi@raspi3:~/openai/line $ cat .env
     LINE_BOT_API=your_api_token
-    HANDLER=your_channel_token
-    OPENAI_API_KEY=your_openai_token
+    LINE_CHANNEL_SECRET_TOKEN=your_channel_token
+    OPENAI_KEY=your_openai_token
 
 
 
