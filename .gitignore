@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# add 20240402
+credentials.json
+settings.yaml
+user_thread_pairs.txt
