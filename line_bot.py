@@ -1,11 +1,14 @@
-import os, time
+import os, time, re
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from collections import defaultdict
+
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
 
 app = Flask(__name__)
 
@@ -54,11 +57,6 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 
 
-
-
-
-
-
 #@app.route("/callback", methods=['POST'])
 @app.route("/", methods=['POST'])
 def callback():
@@ -88,6 +86,12 @@ def handle_message(event):
 
     # thread指定
     thread = client.beta.threads.retrieve(thread_id)
+
+
+    
+
+
+
 
     try:
         message = client.beta.threads.messages.create(
@@ -137,6 +141,93 @@ def handle_message(event):
         print("画像削除した場合'text' key not found in the event data.")
         return
     """
+
+
+
+
+
+### dalle ###
+def create_image(prompt):
+    #OPENAI_KEY = os.environ["OPENAI_API_KEY"]
+    from openai import OpenAI
+    client = OpenAI()
+    model = "dall-e-3"
+    prompt = prompt
+    #size = "512x512"
+    quolity = "standard"
+    n = 1
+
+    try:
+        response = client.images.generate(
+            model = model,
+            prompt = prompt,
+            #size = size,
+            #quolity = quolity,
+            n = n,
+        )
+        image_url = response.data[0].url
+
+    except Exception as e:
+        error_message = re.search(r"'message': '(.*?)'", str(e)).group(1)
+        print("#547", error_message)
+        return
+
+    #image_url = response.data[0].url
+
+    return(image_url)
+
+
+def download_dalle_image(url):
+    img_data = requests.get(
+        url,
+        allow_redirects=True,
+        stream=True,
+    ).content
+
+    # image_filename取得
+    pattern = r"img-[a-zA-Z0-9]+\.png"
+    match = re.search(pattern, url)
+
+    if match:
+        image_filename = match.group()
+        #print("Image filename:", image_filename)
+    else:
+        image_filename = "noname_image.png"
+        #print("No image filename found in the URL.")
+
+    # image_file保存
+    with open(Path(f"./images/{image_filename}").absolute(), "wb") as f:
+        f.write(img_data)
+
+    return image_filename
+
+def upload_google_drive(image_filename):
+    gauth = GoogleAuth()
+    gauth.LocalWebserverAuth()
+    drive = GoogleDrive(gauth)
+
+    # Google Driveに画像をアップロード
+    file = drive.CreateFile()
+    file.SetContentFile(f"./images/{image_filename}")
+    file.Upload()
+
+    # 共有リンクを取得
+    file.InsertPermission({
+        'type': 'anyone',
+        'value': 'anyone',
+        'role': 'reader',
+    })
+
+    file_id = file['id']
+    file_url = f"https://drive.google.com/uc?id={file_id}"
+
+    return file_url
+
+
+
+
+
+
 
 
 if __name__ == "__main__":
