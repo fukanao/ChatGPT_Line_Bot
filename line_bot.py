@@ -5,10 +5,9 @@ from openai import OpenAI
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from pathlib import Path
 
 app = Flask(__name__)
 
@@ -17,6 +16,7 @@ load_dotenv()
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+GYAZO_ACCESS_TOKEN = os.getenv("GYAZO_ACCESS_TOKEN")
 
 
 line_bot_api = LineBotApi(os.environ["LINE_BOT_API"])
@@ -88,59 +88,79 @@ def handle_message(event):
     thread = client.beta.threads.retrieve(thread_id)
 
 
-    
+    # text内に"を描いて"もしくは”描いて”が含まれる場合、描いて以降を削除
+    if "を描いて" in text or "描いて" in text:
+        # パターンにマッチする部分から後ろを削除
+        # パターン: "を描いて" もしくは "描いて" 以降のテキストを削除
+        pattern = r'を?描いて.*$'
+        trimmed_text = re.sub(pattern, '', text, flags=re.DOTALL)
+        image_url = create_image(trimmed_text)
+        image_filename = download_dalle_image(image_url)
+        print(image_filename)
+        #upload_file_url = upload_google_drive(image_filename)
+        upload_file_url = upload_to_gyazo(image_filename)
+
+        #line_bot_api.reply_message(event.reply_token, TextSendMessage(text=upload_file_url))
+        line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=upload_file_url,
+            preview_image_url=upload_file_url))
 
 
 
 
-    try:
-        message = client.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=text
-        )
-        # 実行を作成
-        run = client.beta.threads.runs.create(
-            thread_id=thread.id,
-            assistant_id=assistant.id,
-        )
-
-        while run.status in ['queued', 'in_progress', 'cancelling']:
-            time.sleep(1) # Wait for 1 second
-            run = client.beta.threads.runs.retrieve(
-            thread_id=thread.id,
-            run_id=run.id
-            )
-
-            if run.status == 'completed':
-                messages = client.beta.threads.messages.list(
-                thread_id=thread.id
-            )
-                break
-            else:
-                print(run.status)
-
-                    # メッセージリストから回答を取得
-        for message in messages.data:
-            # アシスタントによるメッセージを探す
-            if message.role == "assistant":
-                # メッセージの内容を表示
-                result = message.content[0].text.value
-                break
-
-        # Lineに回答を返す
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result))
 
 
-    except Exception as e:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=str(e)))
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text='エラーが発生しました。'))
 
-    """
+
+    # text内に"を描いて"が含まれない場合（通常会話）
     else:
-        print("画像削除した場合'text' key not found in the event data.")
-        return
-    """
+        try:
+            message = client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=text
+            )
+            # 実行を作成
+            run = client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant.id,
+            )
+
+            while run.status in ['queued', 'in_progress', 'cancelling']:
+                time.sleep(1) # Wait for 1 second
+                run = client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+                )
+
+                if run.status == 'completed':
+                    messages = client.beta.threads.messages.list(
+                    thread_id=thread.id
+                )
+                    break
+                else:
+                    print(run.status)
+
+                        # メッセージリストから回答を取得
+            for message in messages.data:
+                # アシスタントによるメッセージを探す
+                if message.role == "assistant":
+                    # メッセージの内容を表示
+                    result = message.content[0].text.value
+                    break
+
+            # Lineに回答を返す
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result))
+
+
+        except Exception as e:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=str(e)))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text='エラーが発生しました。'))
+
+        """
+        else:
+            print("画像削除した場合'text' key not found in the event data.")
+            return
+        """
 
 
 
@@ -169,7 +189,7 @@ def create_image(prompt):
 
     except Exception as e:
         error_message = re.search(r"'message': '(.*?)'", str(e)).group(1)
-        print("#547", error_message)
+        print("#186", error_message)
         return
 
     #image_url = response.data[0].url
@@ -201,28 +221,57 @@ def download_dalle_image(url):
 
     return image_filename
 
-def upload_google_drive(image_filename):
+def upload_to_gyazo(image_file_name):
+    url = 'https://upload.gyazo.com/api/upload'
+    with open("images/"+image_file_name, 'rb') as image_file:
+        files = {
+            'imagedata': ('image.png', image_file)
+            #'imagedata': ('image.jpeg', image_file) #pngじゃないとダメだった
+        }
+        data = {
+            'access_token': GYAZO_ACCESS_TOKEN
+        }
+        response = requests.post(url, files=files, data=data)
+        try:
+            response_data = response.json()
+            print(response_data['url'])
+            return response_data['url']
+        except json.JSONDecodeError:
+            print("JSON decode error: " + response.text)  # エラー内容を明確に表示
+'''
+def upload_google_drive(image_file_name):
     gauth = GoogleAuth()
     gauth.LocalWebserverAuth()
     drive = GoogleDrive(gauth)
 
-    # Google Driveに画像をアップロード
-    file = drive.CreateFile()
-    file.SetContentFile(f"./images/{image_filename}")
-    file.Upload()
+    # imagesディレクトリのIDを取得または作成
+    images_folder_name = 'images'
+    images_folder_id = None
 
-    # 共有リンクを取得
-    file.InsertPermission({
-        'type': 'anyone',
-        'value': 'anyone',
-        'role': 'reader',
-    })
+    folder_list = drive.ListFile({'q': "title='" + images_folder_name + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
+    if folder_list:
+        images_folder_id = folder_list[0]['id']
+    else:
+        images_folder = drive.CreateFile({'title': images_folder_name, 'mimeType': 'application/vnd.google-apps.folder'})
+        images_folder.Upload()
+        images_folder_id = images_folder['id']
 
-    file_id = file['id']
-    file_url = f"https://drive.google.com/uc?id={file_id}"
+    # 画像ファイルをアップロード
+    #image_file_name = 'test.jpg'
+    f = drive.CreateFile({'title': image_file_name, 'mimeType': 'image/jpeg', 'parents': [{'id': images_folder_id}]})
+    f.SetContentFile("images/" + image_file_name)
+    f.Upload()
 
-    return file_url
+    def convert_url(url):
+        file_id = re.findall(r'/d/([a-zA-Z0-9-_]+)', url)[0]
+        converted_url = f'http://drive.google.com/uc?export=view&id={file_id}'
+        return converted_url
 
+    alternateLink = f['alternateLink']
+    converted_link = convert_url(alternateLink)
+
+    return converted_link
+'''
 
 
 
