@@ -61,13 +61,6 @@ user_thread_pairs = load_user_thread_pairs(filename)
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-# 各ユーザごとの会話履歴を保持する辞書
-# key: user_id, value: 会話履歴のリスト
-#conversation_history = {}
-
-# response_idをユーザごとに保持
-response_ids = {}
-
 
 
 #@app.route("/callback", methods=['POST'])
@@ -86,35 +79,32 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # response_ids使用
-    global response_ids
+    global now_str
 
     user_id = event.source.user_id
-    user_text = event.message.text
+    text = event.message.text
 
     # thread_id取得
-    #thread_id = get_or_create_thread(client, user_thread_pairs, user_id, filename)
+    thread_id = get_or_create_thread(client, user_thread_pairs, user_id, filename)
 
-    # アシスタント指定
-    #assistant = client.beta.assistants.retrieve("asst_BtQb6ntcebFPeEtcVfdMnyzB")
+    # アシスタント指定(アイ)
+    assistant = client.beta.assistants.retrieve("asst_2wEbwn4xyYDy6F06jJSkJNa5")
+
     # thread指定
-    #thread = client.beta.threads.retrieve(thread_id)
+    thread = client.beta.threads.retrieve(thread_id)
 
-    # ユーザ／アシスタントの会話はシステムメッセージを除いて最新の3ターン（＝ユーザとアシスタント各3ターン分）に制限
-    #MAX_TURNS = 3
-
-    slack("line: " + user_text + "\n")
+    slack("line: "+text+"\n")
 
 
     # text内に"を描いて"もしくは”描いて”が含まれる場合、描いて以降を削除
-    if "を描いて" in user_text or "描いて" in user_text:
+    if "を描いて" in text or "描いて" in text:
         # パターンにマッチする部分から後ろを削除
         # パターン: "を描いて" もしくは "描いて" 以降のテキストを削除
         pattern = r'を?描いて.*$'
-        trimmed_text = re.sub(pattern, '', user_text, flags=re.DOTALL)
+        trimmed_text = re.sub(pattern, '', text, flags=re.DOTALL)
         image_url = create_image(trimmed_text)
         image_filename = download_dalle_image(image_url)
-        #print(image_filename)
+        print(image_filename)
         #upload_file_url = upload_google_drive(image_filename)
         upload_file_url = upload_to_gyazo(image_filename)
 
@@ -123,30 +113,19 @@ def handle_message(event):
             preview_image_url=upload_file_url))
 
 
+
+
+
+
+
+
     # text内に"を描いて"が含まれない場合（通常会話）
     else:
         try:
-            # response_id使用
-            # ユーザIDに対応する前回の response_id をテーブルから取得（存在しなければ None）
-            prev_response_id = response_ids.get(user_id)
-
-            response = client.responses.create(
-                model="gpt-4.1",
-                tools=[{"type": "web_search_preview"}],
-                previous_response_id=prev_response_id,
-                input=user_text,
-                instructions="あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。"
-            )
-            # ユーザIDごとに response_id を更新
-            response_ids[user_id] = response.id
-            result = response.output_text
-
-            '''
-            # OpenAI Assistant + threads使用
             message = client.beta.threads.messages.create(
                 thread_id=thread_id,
                 role="user",
-                content=user_text
+                content=text
             )
             # 実行を作成
             run = client.beta.threads.runs.create(
@@ -176,44 +155,6 @@ def handle_message(event):
                     # メッセージの内容を表示
                     result = message.content[0].text.value
                     break
-            '''
-
-            '''
-            # 辞書形式で会話保持
-            # 初回の場合はシステムメッセージを含めて初期化（システムメッセージは常に保持）
-            if user_id not in conversation_history:
-                conversation_history[user_id] = [
-                    {"role": "system", "content": "あなたは有能なアシスタントです。"}
-                ]
-
-            # ユーザの発言を会話履歴に追加
-            conversation_history[user_id].append({"role": "user", "content": user_text})
-
-            # システムメッセージを除いたユーザ／アシスタントの会話部分が最大 MAX_TURNS * 2 件になるように制限
-            # 全体で MAX_TURNS * 2 + 1 (システムメッセージ分) 件とする
-            max_messages = MAX_TURNS * 2 + 1
-            while len(conversation_history[user_id]) > max_messages:
-                # システムメッセージ (インデックス0) は削除せず、古いユーザ/アシスタントのメッセージを削除
-                conversation_history[user_id].pop(1)
-
-            # responses API使用
-            response = client.responses.create(
-                model="gpt-4o",
-                tools=[{"type": "web_search_preview"}],
-                #input=text
-                input=conversation_history[user_id],
-            )
-
-            result = response.output_text
-
-            # アシスタントの返答を会話履歴に追加
-            conversation_history[user_id].append({"role": "assistant", "content": result})
-
-            # 再度、履歴が上限を超えていれば削除
-            while len(conversation_history[user_id]) > max_messages:
-                conversation_history[user_id].pop(1)
-
-            '''
 
             # Lineに回答を返す
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result))
@@ -257,7 +198,7 @@ def create_image(prompt):
 
     except Exception as e:
         error_message = re.search(r"'message': '(.*?)'", str(e)).group(1)
-        #print("#186", error_message)
+        print("#186", error_message)
         return
 
     #image_url = response.data[0].url
