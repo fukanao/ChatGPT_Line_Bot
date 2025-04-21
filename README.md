@@ -18,16 +18,16 @@ ubuntuサーバで起動しておきます
 ## 起動
 サービスに登録します
     
-    pi@raspi3:~/openai/line $ cat /etc/systemd/system/remu_line_bot.service
+    $ cat /etc/systemd/system/line_ai_bot.service
     [Unit]
-    Description=Remu LINE Bot
+    Description=LINE AI Bot
     After=network.target
     
     [Service]
     User=pi
-    WorkingDirectory=/home/pi/openai/line
-    EnvironmentFile=/home/pi/openai/line/.env
-    ExecStart=/usr/bin/python3 /home/pi/openai/line/Remu_line_bot.py
+    WorkingDirectory=/opt/ChatGPT_Line_Bot
+    EnvironmentFile=/opt/ChatGPT_Line_Bot/.env
+    ExecStart=/usr/bin/python3 /opt/ChatGPT_Line_Bot/line_bot.py
     Restart=always
     RestartSec=10
     
@@ -41,15 +41,15 @@ ubuntuサーバで起動しておきます
     
     
 - ngrok等でLINE側からhttpsでアクセスできるようにしてください
-## ngrok-line サービス
+    $ cat /etc/systemd/system/ngrok-line.service
     [Unit]
     Description=ngrok-line Script
     
     [Service]
-    ExecStart=/usr/bin/python3 /your_path/ngrok-line.py
-    User=user_name
-    Group=user_name
-    WorkingDirectory=/your_path/ngrok_line
+    ExecStart=/usr/bin/python3 /opt/ChatGPT_Line_Bot/ngrok-line.py
+    User=pi
+    Group=pi
+    WorkingDirectory=/opt/ChatGPT_Line_Bot/
     Restart=always
     RestartSec=10
 
