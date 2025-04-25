@@ -27,7 +27,7 @@ ubuntuサーバで起動しておきます
     User=pi
     WorkingDirectory=/opt/ChatGPT_Line_Bot
     EnvironmentFile=/opt/ChatGPT_Line_Bot/.env
-    ExecStart=/usr/bin/python3 /opt/ChatGPT_Line_Bot/line_bot.py
+    ExecStart=/opt/ChatGPT_Line_Bot/myenv/bin/gunicorn -w 2 -b 0.0.0.0:5000 line_bot:app
     Restart=always
     RestartSec=10
     
@@ -41,12 +41,13 @@ ubuntuサーバで起動しておきます
     
     
 - ngrok等でLINE側からhttpsでアクセスできるようにしてください
+
     $ cat /etc/systemd/system/ngrok-line.service
     [Unit]
     Description=ngrok-line Script
     
     [Service]
-    ExecStart=/usr/bin/python3 /opt/ChatGPT_Line_Bot/ngrok-line.py
+    ExecStart=/opt/ChatGPT_Line_Bot/myenv/bin/python /opt/ChatGPT_Line_Bot/ngrok-line.py
     User=pi
     Group=pi
     WorkingDirectory=/opt/ChatGPT_Line_Bot/

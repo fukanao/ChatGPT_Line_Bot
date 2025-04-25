@@ -1,4 +1,4 @@
-import os, time, re, base64, json
+import os, time, re
 import requests
 import slackweb
 from dotenv import load_dotenv
@@ -112,11 +112,15 @@ def handle_message(event):
         # パターン: "を描いて" もしくは "描いて" 以降のテキストを削除
         pattern = r'を?描いて.*$'
         trimmed_text = re.sub(pattern, '', user_text, flags=re.DOTALL)
-        result = create_image(trimmed_text, event.reply_token)
-        if result == "success":
-            upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
-            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=upload_file_url,
-                preview_image_url=upload_file_url))
+        image_url = create_image(trimmed_text)
+        image_filename = download_dalle_image(image_url)
+        #print(image_filename)
+        #upload_file_url = upload_google_drive(image_filename)
+        upload_file_url = upload_to_gyazo(image_filename)
+
+        #line_bot_api.reply_message(event.reply_token, TextSendMessage(text=upload_file_url))
+        line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=upload_file_url,
+            preview_image_url=upload_file_url))
 
 
     # text内に"を描いて"が含まれない場合（通常会話）
@@ -137,6 +141,80 @@ def handle_message(event):
             response_ids[user_id] = response.id
             result = response.output_text
 
+            '''
+            # OpenAI Assistant + threads使用
+            message = client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role="user",
+                content=user_text
+            )
+            # 実行を作成
+            run = client.beta.threads.runs.create(
+                thread_id=thread.id,
+                assistant_id=assistant.id,
+            )
+
+            while run.status in ['queued', 'in_progress', 'cancelling']:
+                time.sleep(1) # Wait for 1 second
+                run = client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+                )
+
+                if run.status == 'completed':
+                    messages = client.beta.threads.messages.list(
+                    thread_id=thread.id
+                )
+                    break
+                else:
+                    print(run.status)
+
+                        # メッセージリストから回答を取得
+            for message in messages.data:
+                # アシスタントによるメッセージを探す
+                if message.role == "assistant":
+                    # メッセージの内容を表示
+                    result = message.content[0].text.value
+                    break
+            '''
+
+            '''
+            # 辞書形式で会話保持
+            # 初回の場合はシステムメッセージを含めて初期化（システムメッセージは常に保持）
+            if user_id not in conversation_history:
+                conversation_history[user_id] = [
+                    {"role": "system", "content": "あなたは有能なアシスタントです。"}
+                ]
+
+            # ユーザの発言を会話履歴に追加
+            conversation_history[user_id].append({"role": "user", "content": user_text})
+
+            # システムメッセージを除いたユーザ／アシスタントの会話部分が最大 MAX_TURNS * 2 件になるように制限
+            # 全体で MAX_TURNS * 2 + 1 (システムメッセージ分) 件とする
+            max_messages = MAX_TURNS * 2 + 1
+            while len(conversation_history[user_id]) > max_messages:
+                # システムメッセージ (インデックス0) は削除せず、古いユーザ/アシスタントのメッセージを削除
+                conversation_history[user_id].pop(1)
+
+            # responses API使用
+            response = client.responses.create(
+                model="gpt-4o",
+                tools=[{"type": "web_search_preview"}],
+                #input=text
+                input=conversation_history[user_id],
+            )
+
+            result = response.output_text
+
+            # アシスタントの返答を会話履歴に追加
+            conversation_history[user_id].append({"role": "assistant", "content": result})
+
+            # 再度、履歴が上限を超えていれば削除
+            while len(conversation_history[user_id]) > max_messages:
+                conversation_history[user_id].pop(1)
+
+            '''
+
             # Lineに回答を返す
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result))
 
@@ -156,36 +234,36 @@ def handle_message(event):
 
 
 ### dalle ###
-def create_image(prompt, reply_token):
+def create_image(prompt):
     #OPENAI_KEY = os.environ["OPENAI_API_KEY"]
     from openai import OpenAI
     client = OpenAI()
-    model = "gpt-image-1"
+    model = "dall-e-3"
     prompt = prompt
+    #size = "512x512"
     size = "1024x1792"
+    quolity = "standard"
     n = 1
 
     try:
-        result = client.images.generate(
+        response = client.images.generate(
             model = model,
             prompt = prompt,
+            #size = size,
+            #quolity = quolity,
             n = n,
         )
-
-        image_base64 = result.data[0].b64_json
-        image_bytes = base64.b64decode(image_base64)
-
-        # Save the image to a file
-        with open("/home/pi/images/image.png", "wb") as f:
-            f.write(image_bytes)
-        return "success"
+        image_url = response.data[0].url
 
     except Exception as e:
         error_message = re.search(r"'message': '(.*?)'", str(e)).group(1)
-        #print("#259", error_message)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=error_message))
-        return "error"
-    return
+        #print("#186", error_message)
+        return
+
+    #image_url = response.data[0].url
+
+    return(image_url)
+
 
 def download_dalle_image(url):
     img_data = requests.get(
@@ -213,7 +291,7 @@ def download_dalle_image(url):
 
 def upload_to_gyazo(image_file_name):
     url = 'https://upload.gyazo.com/api/upload'
-    with open("/home/pi/images/image.png", 'rb') as image_file:
+    with open("images/"+image_file_name, 'rb') as image_file:
         files = {
             'imagedata': ('image.png', image_file)
             #'imagedata': ('image.jpeg', image_file) #pngじゃないとダメだった
@@ -228,6 +306,45 @@ def upload_to_gyazo(image_file_name):
             return response_data['url']
         except json.JSONDecodeError:
             print("JSON decode error: " + response.text)  # エラー内容を明確に表示
+'''
+def upload_google_drive(image_file_name):
+    gauth = GoogleAuth()
+    gauth.LocalWebserverAuth()
+    drive = GoogleDrive(gauth)
+
+    # imagesディレクトリのIDを取得または作成
+    images_folder_name = 'images'
+    images_folder_id = None
+
+    folder_list = drive.ListFile({'q': "title='" + images_folder_name + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"}).GetList()
+    if folder_list:
+        images_folder_id = folder_list[0]['id']
+    else:
+        images_folder = drive.CreateFile({'title': images_folder_name, 'mimeType': 'application/vnd.google-apps.folder'})
+        images_folder.Upload()
+        images_folder_id = images_folder['id']
+
+    # 画像ファイルをアップロード
+    #image_file_name = 'test.jpg'
+    f = drive.CreateFile({'title': image_file_name, 'mimeType': 'image/jpeg', 'parents': [{'id': images_folder_id}]})
+    f.SetContentFile("images/" + image_file_name)
+    f.Upload()
+
+    def convert_url(url):
+        file_id = re.findall(r'/d/([a-zA-Z0-9-_]+)', url)[0]
+        converted_url = f'http://drive.google.com/uc?export=view&id={file_id}'
+        return converted_url
+
+    alternateLink = f['alternateLink']
+    converted_link = convert_url(alternateLink)
+
+    return converted_link
+'''
+
+
+
+
+
 
 
 if __name__ == "__main__":
