@@ -117,6 +117,7 @@ def handle_message(event):
             upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
             line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=upload_file_url,
                 preview_image_url=upload_file_url))
+            slack("line: 画像を出力しました")
 
 
     # text内に"を描いて"が含まれない場合（通常会話）
@@ -155,7 +156,7 @@ def handle_message(event):
 
 
 
-### dalle ###
+### gpt-image-1 ###
 def create_image(prompt, reply_token):
     #OPENAI_KEY = os.environ["OPENAI_API_KEY"]
     from openai import OpenAI
