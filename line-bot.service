@@ -1,0 +1,14 @@
+[Unit]
+Description=LINE AI Bot
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/opt/ChatGPT_Line_Bot
+EnvironmentFile=/opt/ChatGPT_Line_Bot/.env
+ExecStart=/opt/ChatGPT_Line_Bot/myenv/bin/gunicorn --workers 2 --bind 0.0.0.0:5000 --timeout 180 --graceful-timeout 30 line_bot:app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 

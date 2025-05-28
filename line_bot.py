@@ -106,17 +106,31 @@ def handle_message(event):
     slack("line: " + user_text + "\n")
 
 
-    # text内に"を描いて"もしくは”描いて”が含まれる場合、描いて以降を削除
+    # text内に"を描いて"もしくは"描いて"が含まれる場合、描いて以降を削除
     if "を描いて" in user_text or "描いて" in user_text:
+        #print("#111 image start")
         # パターンにマッチする部分から後ろを削除
         # パターン: "を描いて" もしくは "描いて" 以降のテキストを削除
         pattern = r'を?描いて.*$'
         trimmed_text = re.sub(pattern, '', user_text, flags=re.DOTALL)
+
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="最大3分待っててね"))
         result = create_image(trimmed_text, event.reply_token)
         if result == "success":
             upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
-            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=upload_file_url,
-                preview_image_url=upload_file_url))
+            # ここでevent.source.typeを判定
+            if event.source.type == "user":
+                line_bot_api.push_message(event.source.user_id, ImageSendMessage(
+                    original_content_url=upload_file_url,
+                    preview_image_url=upload_file_url))
+            elif event.source.type == "group":
+                line_bot_api.push_message(event.source.group_id, ImageSendMessage(
+                    original_content_url=upload_file_url,
+                    preview_image_url=upload_file_url))
+            elif event.source.type == "room":
+                line_bot_api.push_message(event.source.room_id, ImageSendMessage(
+                    original_content_url=upload_file_url,
+                    preview_image_url=upload_file_url))
             slack("line: 画像を出力しました")
 
 
@@ -163,7 +177,8 @@ def create_image(prompt, reply_token):
     client = OpenAI()
     model = "gpt-image-1"
     prompt = prompt
-    size = "1024x1792"
+    #size = "1024x1024"
+    size = "1536x1024"
     n = 1
 
     try:
@@ -179,12 +194,15 @@ def create_image(prompt, reply_token):
         # Save the image to a file
         with open("/home/pi/images/image.png", "wb") as f:
             f.write(image_bytes)
+
+        #print("#183 create_image success")
         return "success"
 
     except Exception as e:
         error_message = re.search(r"'message': '(.*?)'", str(e)).group(1)
         #print("#259", error_message)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=error_message))
+        slack("#191 "+ str(e))
         return "error"
     return
 
@@ -210,6 +228,7 @@ def download_dalle_image(url):
     with open(Path(f"./images/{image_filename}").absolute(), "wb") as f:
         f.write(img_data)
 
+    #print("#215 download_image") 
     return image_filename
 
 def upload_to_gyazo(image_file_name):
@@ -225,7 +244,7 @@ def upload_to_gyazo(image_file_name):
         response = requests.post(url, files=files, data=data)
         try:
             response_data = response.json()
-            print(response_data['url'])
+            #print("#232 upload gyazo" + response_data['url'])
             return response_data['url']
         except json.JSONDecodeError:
             print("JSON decode error: " + response.text)  # エラー内容を明確に表示
