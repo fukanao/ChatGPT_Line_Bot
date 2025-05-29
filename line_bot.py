@@ -1,13 +1,14 @@
 import os, time, re, base64, json
 import requests
 import slackweb
+import sqlite3
 from dotenv import load_dotenv
 from openai import OpenAI
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
-
+from datetime import datetime
 from pathlib import Path
 
 app = Flask(__name__)
@@ -28,46 +29,50 @@ def slack(text):
   slack = slackweb.Slack(url=SLACK_WEBHOOK)
   slack.notify(text=text, username="raspi-bot", icon_emoji=":raspberrypi:", mrkdwn=True)
 
-# assitantAPI対応
 
-def load_user_thread_pairs(filename):
-    """ ファイルからユーザーIDとスレッドIDのペアを読み込み、辞書として返す """
-    user_thread_pairs = {}
-    with open(filename, 'r') as file:
-        for line in file:
-            user_id, thread_id = line.strip().split(',')
-            user_thread_pairs[user_id] = thread_id
-    return user_thread_pairs
+# response_id保存用のデータベース
+def save_response_id(user_id: str, response_id: str):
+    # 関数内で接続を作成
+    conn = sqlite3.connect('chatbot.db', detect_types=sqlite3.PARSE_DECLTYPES)
+    cur = conn.cursor()
+    
+    # テーブルがなければ作成
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        user_id     TEXT PRIMARY KEY,
+        response_id TEXT NOT NULL,
+        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    
+    cur.execute("""
+    INSERT OR REPLACE INTO sessions (user_id, response_id, updated_at)
+    VALUES (?, ?, ?)
+    """, (user_id, response_id, datetime.now()))
+    conn.commit()
+    conn.close()
 
-def save_user_thread_pair(filename, user_id, thread_id):
-    """ ユーザーIDとスレッドIDのペアをファイルに保存する """
-    with open(filename, 'a') as file:
-        file.write(f"{user_id},{thread_id}\n")
+def get_response_id(user_id: str) -> str | None:
+    # 関数内で接続を作成
+    conn = sqlite3.connect('chatbot.db', detect_types=sqlite3.PARSE_DECLTYPES)
+    cur = conn.cursor()
+    
+    # テーブルがなければ作成
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        user_id     TEXT PRIMARY KEY,
+        response_id TEXT NOT NULL,
+        updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    
+    cur.execute("SELECT response_id FROM sessions WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
 
-def get_or_create_thread(client, user_thread_pairs, user_id, filename):
-    """ ユーザーIDに基づいてスレッドIDを取得または作成する """
-    if user_id in user_thread_pairs:
-        return user_thread_pairs[user_id]
-    else:
-        # 新しいスレッドを作成（APIの仕様に応じて変更する必要あり）
-        new_thread = client.beta.threads.create()
-        new_thread_id = new_thread.id
-        user_thread_pairs[user_id] = new_thread_id
-        save_user_thread_pair(filename, user_id, new_thread_id)
-        return new_thread_id
-
-filename = 'user_thread_pairs.txt'
-user_thread_pairs = load_user_thread_pairs(filename)
 
 client = OpenAI(api_key=OPENAI_KEY)
-
-# 各ユーザごとの会話履歴を保持する辞書
-# key: user_id, value: 会話履歴のリスト
-#conversation_history = {}
-
-# response_idをユーザごとに保持
-response_ids = {}
-
 
 
 #@app.route("/callback", methods=['POST'])
@@ -86,25 +91,10 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # response_ids使用
-    global response_ids
-
     user_id = event.source.user_id
     user_text = event.message.text
 
-    # thread_id取得
-    #thread_id = get_or_create_thread(client, user_thread_pairs, user_id, filename)
-
-    # アシスタント指定
-    #assistant = client.beta.assistants.retrieve("asst_BtQb6ntcebFPeEtcVfdMnyzB")
-    # thread指定
-    #thread = client.beta.threads.retrieve(thread_id)
-
-    # ユーザ／アシスタントの会話はシステムメッセージを除いて最新の3ターン（＝ユーザとアシスタント各3ターン分）に制限
-    #MAX_TURNS = 3
-
     slack("line: " + user_text + "\n")
-
 
     # text内に"を描いて"もしくは"描いて"が含まれる場合、描いて以降を削除
     if "を描いて" in user_text or "描いて" in user_text:
@@ -138,8 +128,8 @@ def handle_message(event):
     else:
         try:
             # response_id使用
-            # ユーザIDに対応する前回の response_id をテーブルから取得（存在しなければ None）
-            prev_response_id = response_ids.get(user_id)
+            # ユーザIDに対応する前回の response_id をDBから取得（存在しなければ None）
+            prev_response_id = get_response_id(user_id)
 
             response = client.responses.create(
                 model="gpt-4.1",
@@ -149,7 +139,7 @@ def handle_message(event):
                 instructions="あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。"
             )
             # ユーザIDごとに response_id を更新
-            response_ids[user_id] = response.id
+            save_response_id(user_id, response.id)
             result = response.output_text
 
             # Lineに回答を返す
