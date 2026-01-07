@@ -107,20 +107,13 @@ def handle_message(event):
         prev_response_id = get_response_id(user_id)
 
         response = client.responses.create(
-            model="gpt-5.2",
-            reasoning={"effort": "medium"},
-            tools=[{"type": "web_search"}],
+            model="gpt-4.1",
+            tools=[{"type": "web_search_preview"}],
             previous_response_id=prev_response_id,
             input=user_text,
-            stream=False,
-            store=True,
             instructions="""あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。
             ユーザーの要求が画像生成に関連する場合は、必ず「画像生成が必要です」というフレーズを含めてください。
-            Web検索が必要な場合は、検索結果に確信が得られるまで検索してください。
-            それ以外の場合は通常の会話として応答してください。
-            ** という強調表現は禁止です。
-            Powered by GPT-5.2
-            """
+            それ以外の場合は通常の会話として応答してください。"""
         )
         # ユーザIDごとに response_id を更新
         save_response_id(user_id, response.id)

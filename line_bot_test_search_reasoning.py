@@ -1,4 +1,4 @@
-import os, time, re, base64, json
+import os, time, re, base64, json, asyncio
 import requests
 import slackweb
 import sqlite3
@@ -12,6 +12,10 @@ from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import ReplyMessageRequest, PushMessageRequest
 from datetime import datetime
 from pathlib import Path
+# Responses API 用型（必須だが本ファイルでは未使用）
+from openai.types.responses import ResponseTextDeltaEvent
+# Agent ライブラリ
+from agents import Agent, Runner, WebSearchTool, ItemHelpers
 
 app = Flask(__name__)
 
@@ -103,31 +107,44 @@ def handle_message(event):
     slack("line: " + user_text + "\n")
 
     try:
-        # response_id使用
+        # 直前の response_id を取得（保存用にのみ使用）
         prev_response_id = get_response_id(user_id)
 
-        response = client.responses.create(
-            model="gpt-5.2",
-            reasoning={"effort": "medium"},
-            tools=[{"type": "web_search"}],
-            previous_response_id=prev_response_id,
-            input=user_text,
-            stream=False,
-            store=True,
-            instructions="""あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。
-            ユーザーの要求が画像生成に関連する場合は、必ず「画像生成が必要です」というフレーズを含めてください。
-            Web検索が必要な場合は、検索結果に確信が得られるまで検索してください。
-            それ以外の場合は通常の会話として応答してください。
-            ** という強調表現は禁止です。
-            Powered by GPT-5.2
-            """
+        # --- Agent 定義 ---
+        researcher = Agent(
+            name="Researcher",
+            instructions="""あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。\nユーザーの要求が画像生成に関連する場合は、必ず『画像生成が必要です』というフレーズを含めてください。\nそれ以外の場合は通常の会話として応答してください。必要に応じて回答の根拠となるWebページのURLも提示してください。""",
+            tools=[WebSearchTool()],
+            model="gpt-4.1",
         )
-        # ユーザIDごとに response_id を更新
-        save_response_id(user_id, response.id)
-        result = response.output_text
+
+        # --- Agent 実行（ストリーム無し）---
+        # Runner.run は非同期コルーチンのため同期関数内では asyncio.run で実行
+        result = asyncio.run(Runner.run(researcher, input=user_text))
+
+        # 結果の response_id が取得できる場合は保存
+        if hasattr(result, "id"):
+            save_response_id(user_id, result.id)
+        elif hasattr(result, "response_id"):
+            save_response_id(user_id, result.response_id)
+
+        # 本文抽出
+        answer_text: str = result.final_output if hasattr(result, "final_output") else str(result)
+
+        # WebSearchTool の結果から URL を抽出
+        urls: list[str] = []
+        for item in getattr(result, "items", []):
+            if getattr(item, "type", "") == "tool_call_output_item":
+                for r in getattr(item, "output", []):
+                    url = getattr(r, "url", None)
+                    if url:
+                        urls.append(url)
+
+        if urls:
+            answer_text += "\n\n参考URL:\n" + "\n".join(dict.fromkeys(urls))
 
         # 画像生成が必要かどうかを判断
-        if "画像生成が必要です" in result:
+        if "画像生成が必要です" in answer_text:
             # If 1-on-1 chat, show loading animation instead of text
             if event.source.type == "user":
                 start_loading(event.source.user_id, seconds=60)
@@ -138,7 +155,7 @@ def handle_message(event):
                     TextSendMessage(text="画像を生成中です。少々お待ちください")
                 )
             # 画像生成の指示から「画像生成が必要です」を削除
-            prompt = result.replace("画像生成が必要です", "").strip()
+            prompt = answer_text.replace("画像生成が必要です", "").strip()
             result = create_image(prompt, event.reply_token)
             if result == "success":
                 upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
@@ -165,7 +182,7 @@ def handle_message(event):
             # 通常の会話として応答
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=result)
+                TextSendMessage(text=answer_text)
             )
 
     except Exception as e:
