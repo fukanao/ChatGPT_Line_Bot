@@ -3,13 +3,13 @@ import requests
 import slackweb
 import sqlite3
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
-from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
-from linebot.v3.messaging.models import ReplyMessageRequest, PushMessageRequest
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, ImageMessage
+from linebot.v3.messaging import MessagingApi, MessagingApiBlob, Configuration, ApiClient
+from linebot.v3.messaging.models import ReplyMessageRequest, PushMessageRequest, TextMessage
 from datetime import datetime
 from pathlib import Path
 
@@ -27,9 +27,59 @@ SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
 configuration = Configuration(access_token=os.environ["LINE_BOT_API"])
 api_client = ApiClient(configuration)
 messaging_api = MessagingApi(api_client)
+messaging_api_blob = MessagingApiBlob(api_client)
 # v2 LineBotApi (simpler message helpers)
 line_bot_api = LineBotApi(os.environ["LINE_BOT_API"])  # Added
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_TOKEN"])
+
+def reply_text(reply_token: str, text: str):
+    """テキスト返信（reply_tokenは1回だけ有効）。まずv2、失敗時にv3。"""
+    sanitized = "" if text is None else str(text)
+    if not sanitized.strip():
+        sanitized = "応答が空でした。もう一度お試しください。"
+    try:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=sanitized))
+        return
+    except Exception as e:
+        try:
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=sanitized)]
+                )
+            )
+        except Exception as e2:
+            try:
+                slack(f"reply_text error: {e} / v3 fallback: {e2}")
+            except Exception:
+                pass
+
+def _extract_blob_content(resp):
+    """LINE v3 blob APIのレスポンスからバイト列とMIMEを取り出す。"""
+    default_mime = "image/jpeg"
+    mime = default_mime
+    data = None
+
+    # ヘッダ取得
+    if hasattr(resp, "headers") and isinstance(resp.headers, dict):
+        mime = resp.headers.get("Content-Type", default_mime)
+
+    # データ取り出し
+    if hasattr(resp, "data") and resp.data:
+        data = resp.data if isinstance(resp.data, (bytes, bytearray)) else bytes(resp.data)
+    elif hasattr(resp, "iter_content"):
+        data = b"".join(resp.iter_content(chunk_size=1024))
+    elif hasattr(resp, "read"):
+        data = resp.read()
+    elif hasattr(resp, "content"):
+        data = resp.content if isinstance(resp.content, (bytes, bytearray)) else bytes(resp.content)
+    elif isinstance(resp, (bytes, bytearray)):
+        data = bytes(resp)
+
+    return data, mime
+
+RECENT_IMAGE_TTL = 120  # seconds
+recent_images = {}  # user_id -> {"data": bytes, "ts": float}
 
 def slack(text):
   slack = slackweb.Slack(url=SLACK_WEBHOOK)
@@ -102,87 +152,129 @@ def handle_message(event):
 
     slack("line: " + user_text + "\n")
 
+    # 直近画像の有効期限管理
+    img_entry = recent_images.get(user_id)
+    if img_entry and (time.time() - img_entry["ts"] > RECENT_IMAGE_TTL):
+        recent_images.pop(user_id, None)
+        img_entry = None
+
     try:
-        # response_id使用
-        prev_response_id = get_response_id(user_id)
-
-        response = client.responses.create(
-            model="gpt-5.2",
-            reasoning={"effort": "medium"},
-            tools=[{"type": "web_search"}],
-            previous_response_id=prev_response_id,
-            input=user_text,
-            stream=False,
-            store=True,
-            instructions="""あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。
-            ユーザーの要求が画像生成に関連する場合は、必ず「画像生成が必要です」というフレーズを含めてください。
-            Web検索が必要な場合は、検索結果に確信が得られるまで検索してください。
-            それ以外の場合は通常の会話として応答してください。
-            ** という強調表現は禁止です。
-            Powered by GPT-5.2
-            """
-        )
-        # ユーザIDごとに response_id を更新
-        save_response_id(user_id, response.id)
-        result = response.output_text
-
-        # 画像生成が必要かどうかを判断
-        if "画像生成が必要です" in result:
-            # If 1-on-1 chat, show loading animation instead of text
-            if event.source.type == "user":
-                start_loading(event.source.user_id, seconds=60)
-            else:
-                # fallback for group/room where loading animation is unsupported
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="画像を生成中です。少々お待ちください")
-                )
-            # 画像生成の指示から「画像生成が必要です」を削除
-            prompt = result.replace("画像生成が必要です", "").strip()
-            result = create_image(prompt, event.reply_token)
-            if result == "success":
-                upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
-                if event.source.type == "user":
-                    line_bot_api.push_message(
-                        to=event.source.user_id,
-                        messages=[ImageSendMessage(original_content_url=upload_file_url,
-                                                    preview_image_url=upload_file_url)]
-                    )
-                elif event.source.type == "group":
-                    line_bot_api.push_message(
-                        to=event.source.group_id,
-                        messages=[ImageSendMessage(original_content_url=upload_file_url,
-                                                    preview_image_url=upload_file_url)]
-                    )
-                elif event.source.type == "room":
-                    line_bot_api.push_message(
-                        to=event.source.room_id,
-                        messages=[ImageSendMessage(original_content_url=upload_file_url,
-                                                    preview_image_url=upload_file_url)]
-                    )
-                slack("line: 画像を出力しました")
-        else:
-            # 通常の会話として応答
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=result)
+        if img_entry:
+            # 画像＋プロンプトをOpenAI Visionへ
+            image_b64 = base64.b64encode(img_entry["data"]).decode("utf-8")
+            mime = img_entry.get("mime", "image/jpeg")
+            image_data_url = f"data:{mime};base64,{image_b64}"
+            vision_input = [
+                {
+                    "role": "user",
+                    "content": [
+                {
+                    "type": "input_text",
+                            "text": (
+                                "以下の画像を: {prompt}\n"
+                                "- 箇条書きで説明\n"
+                                "- 画像内の文字は抽出して明示\n"
+                                "- 日本語で回答"
+                            ).format(prompt=user_text)
+                },
+                {
+                    "type": "input_image",
+                            "image_url": image_data_url  # base64 data URL をそのまま渡す
+                    }
+                    ]
+                }
+            ]
+            response = client.responses.create(
+                model="gpt-5.2",
+                reasoning={"effort": "medium"},
+                input=vision_input,
+                stream=False,
+                store=True,
+                instructions="必ず日本語で、箇条書きで回答してください。"
             )
+            recent_images.pop(user_id, None)
+            # ユーザIDごとに response_id を更新
+            save_response_id(user_id, response.id)
+            result = response.output_text
+            reply_text(event.reply_token, result)
+        else:
+            # response_id使用（テキストのみ）
+            prev_response_id = get_response_id(user_id)
+            response = client.responses.create(
+                model="gpt-5.2",
+                reasoning={"effort": "medium"},
+                tools=[{"type": "web_search"}],
+                previous_response_id=prev_response_id,
+                input=user_text,
+                stream=False,
+                store=True,
+                instructions="""あなたは優秀なAIアシスタントです。回答は必ず日本語で行います。
+                ユーザーの要求が画像生成に関連する場合は、必ず「画像生成が必要です」というフレーズを含めてください。
+                Web検索が必要な場合は、検索結果に確信が得られるまで検索してください。
+                それ以外の場合は通常の会話として応答してください。
+                **強調** という強調表現は禁止です。
+                Powered by GPT-5.2
+                """
+            )
+            # ユーザIDごとに response_id を更新
+            save_response_id(user_id, response.id)
+            result = response.output_text
+
+            # 画像生成が必要かどうかを判断
+            if "画像生成が必要です" in result:
+                # If 1-on-1 chat, show loading animation instead of text
+                if event.source.type == "user":
+                    start_loading(event.source.user_id, seconds=60)
+                else:
+                    # fallback for group/room where loading animation is unsupported
+                    reply_text(event.reply_token, "画像を生成中です。少々お待ちください")
+                # 画像生成の指示から「画像生成が必要です」を削除
+                prompt = result.replace("画像生成が必要です", "").strip()
+                result = create_image(prompt, event.reply_token)
+                if result == "success":
+                    upload_file_url = upload_to_gyazo('/home/pi/images/image.png')
+                    if event.source.type == "user":
+                        line_bot_api.push_message(
+                            to=event.source.user_id,
+                            messages=[ImageSendMessage(original_content_url=upload_file_url,
+                                                        preview_image_url=upload_file_url)]
+                        )
+                    elif event.source.type == "group":
+                        line_bot_api.push_message(
+                            to=event.source.group_id,
+                            messages=[ImageSendMessage(original_content_url=upload_file_url,
+                                                        preview_image_url=upload_file_url)]
+                        )
+                    elif event.source.type == "room":
+                        line_bot_api.push_message(
+                            to=event.source.room_id,
+                            messages=[ImageSendMessage(original_content_url=upload_file_url,
+                                                        preview_image_url=upload_file_url)]
+                        )
+                    slack("line: 画像を出力しました")
+            else:
+                # 通常の会話として応答
+                reply_text(event.reply_token, result)
 
     except Exception as e:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=str(e)))
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="エラーが発生しました。"))
-        messaging_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[{"type": "text", "text": f"画像生成中にエラーが発生しました: {e}"}]
-            )
-        )
-        # Additionally notify via v2 in case the above fails
-        try:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"画像生成中にエラーが発生しました: {e}"))
-        except Exception:
-            pass
+        reply_text(event.reply_token, f"エラーが発生しました: {e}")
+        slack(f"line error: {e}")
 
+
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    user_id = event.source.user_id
+    try:
+        # v3 blob API推奨
+        content = messaging_api_blob.get_message_content(message_id=event.message.id)
+        img_bytes, mime = _extract_blob_content(content)
+        if not img_bytes:
+            raise RuntimeError("画像データの取得に失敗しました。")
+        recent_images[user_id] = {"data": img_bytes, "ts": time.time(), "mime": mime}
+        reply_text(event.reply_token, "画像を受け取りました。解析したい指示をテキストで送ってください。")
+    except Exception as e:
+        reply_text(event.reply_token, f"画像の受信に失敗しました: {e}")
+        slack(f"画像受信エラー: {e}")
 
 
 
@@ -228,12 +320,7 @@ def create_image(prompt, reply_token):
         except:
             pass  # エラーメッセージの抽出に失敗した場合は元のエラーメッセージを使用
 
-        messaging_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[{"type": "text", "text": f"画像生成中にエラーが発生しました: {error_message}"}]
-            )
-        )
+        reply_text(reply_token, f"画像生成中にエラーが発生しました: {error_message}")
         slack(f"画像生成エラー: {error_message}")
         return "error"
 
