@@ -134,3 +134,5 @@ settings.yaml
 user_thread_pairs.txt
 images/
 *.db
+
+myenv/
