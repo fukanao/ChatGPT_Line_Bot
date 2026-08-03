@@ -1,0 +1,13 @@
+[Unit]
+Description=ngrok-line Script
+
+[Service]
+ExecStart=/opt/ChatGPT_Line_Bot/myenv/bin/python3 /opt/ChatGPT_Line_Bot/ngrok-line.py
+User=kusanagi
+Group=kusanagi
+WorkingDirectory=/opt/ChatGPT_Line_Bot/
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
