@@ -185,8 +185,8 @@ def handle_message(event):
                 }
             ]
             response = client.responses.create(
-                model="gpt-5.2",
-                reasoning={"effort": "medium"},
+                model="gpt-5.5",
+                reasoning={"effort": "low"},
                 input=vision_input,
                 stream=False,
                 store=True,
@@ -201,7 +201,11 @@ def handle_message(event):
             # response_id使用（テキストのみ）
             prev_response_id = get_response_id(user_id)
             response = client.responses.create(
-                model="gpt-5.2",
+                model="gpt-5.6-terra",
+                #model="gpt-5.5",
+                #model="gpt-5.3-chat-latest",
+                #model="gpt-5.2",
+                #reasoning={"effort": "low"},
                 reasoning={"effort": "medium"},
                 tools=[{"type": "web_search"}],
                 previous_response_id=prev_response_id,
@@ -213,7 +217,7 @@ def handle_message(event):
                 Web検索が必要な場合は、検索結果に確信が得られるまで検索してください。
                 それ以外の場合は通常の会話として応答してください。
                 **強調** という強調表現は禁止です。
-                Powered by GPT-5.2
+                Powered by GPT-5.6
                 """
             )
             # ユーザIDごとに response_id を更新
@@ -286,8 +290,9 @@ def create_image(prompt, reply_token):
     from pathlib import Path
 
     client = OpenAI()
-    model = "gpt-image-1"
-    size = "1536x1024"
+    model = "gpt-image-2"
+    #size = "1536x1024"
+    size = "auto"
     n = 1
 
     try:
