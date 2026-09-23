@@ -1,4 +1,4 @@
-import os, time, re, base64, json
+import os, re, base64, json
 import requests
 import slackweb
 import sqlite3
@@ -8,8 +8,9 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, ImageMessage
-from linebot.v3.messaging import MessagingApi, MessagingApiBlob, Configuration, ApiClient
-from linebot.v3.messaging.models import ReplyMessageRequest, PushMessageRequest, TextMessage
+from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
+from linebot.v3.messaging.models import ReplyMessageRequest, PushMessageRequest, TextMessage as V3TextMessage
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -27,7 +28,6 @@ SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
 configuration = Configuration(access_token=os.environ["LINE_BOT_API"])
 api_client = ApiClient(configuration)
 messaging_api = MessagingApi(api_client)
-messaging_api_blob = MessagingApiBlob(api_client)
 # v2 LineBotApi (simpler message helpers)
 line_bot_api = LineBotApi(os.environ["LINE_BOT_API"])  # Added
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_TOKEN"])
@@ -45,7 +45,7 @@ def reply_text(reply_token: str, text: str):
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text=sanitized)]
+                    messages=[V3TextMessage(text=sanitized)]
                 )
             )
         except Exception as e2:
@@ -54,32 +54,51 @@ def reply_text(reply_token: str, text: str):
             except Exception:
                 pass
 
-def _extract_blob_content(resp):
-    """LINE v3 blob APIのレスポンスからバイト列とMIMEを取り出す。"""
-    default_mime = "image/jpeg"
-    mime = default_mime
-    data = None
+def conversation_id(event):
+    """同じユーザーでも個人・グループ・ルームの会話を分離する。"""
+    source = event.source
+    if source.type == "user":
+        return source.user_id
+    chat_id = getattr(source, f"{source.type}_id")
+    return f"{source.type}:{chat_id}:{source.user_id}"
 
-    # ヘッダ取得
-    if hasattr(resp, "headers") and isinstance(resp.headers, dict):
-        mime = resp.headers.get("Content-Type", default_mime)
 
-    # データ取り出し
-    if hasattr(resp, "data") and resp.data:
-        data = resp.data if isinstance(resp.data, (bytes, bytearray)) else bytes(resp.data)
-    elif hasattr(resp, "iter_content"):
-        data = b"".join(resp.iter_content(chunk_size=1024))
-    elif hasattr(resp, "read"):
-        data = resp.read()
-    elif hasattr(resp, "content"):
-        data = resp.content if isinstance(resp.content, (bytes, bytearray)) else bytes(resp.content)
-    elif isinstance(resp, (bytes, bytearray)):
-        data = bytes(resp)
+def pending_image_connection():
+    conn = sqlite3.connect('chatbot.db')
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_images (
+            user_id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            data BLOB NOT NULL,
+            mime TEXT NOT NULL
+        )
+    """)
+    return conn
 
-    return data, mime
 
-RECENT_IMAGE_TTL = 120  # seconds
-recent_images = {}  # user_id -> {"data": bytes, "ts": float}
+def save_pending_image(user_id, message_id, data, mime):
+    with closing(pending_image_connection()) as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO pending_images VALUES (?, ?, ?, ?)",
+            (user_id, message_id, data, mime),
+        )
+
+
+def get_pending_image(user_id):
+    with closing(pending_image_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM pending_images WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+
+def delete_pending_image(user_id, message_id):
+    with closing(pending_image_connection()) as conn, conn:
+        # API処理中に届いた新しい画像は削除しない。
+        conn.execute(
+            "DELETE FROM pending_images WHERE user_id = ? AND message_id = ?",
+            (user_id, message_id),
+        )
 
 def slack(text):
   slack = slackweb.Slack(url=SLACK_WEBHOOK)
@@ -147,54 +166,39 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_id = event.source.user_id
+    user_id = conversation_id(event)
     user_text = event.message.text
 
     slack("line: " + user_text + "\n")
 
-    # 直近画像の有効期限管理
-    img_entry = recent_images.get(user_id)
-    if img_entry and (time.time() - img_entry["ts"] > RECENT_IMAGE_TTL):
-        recent_images.pop(user_id, None)
-        img_entry = None
-
     try:
+        img_entry = get_pending_image(user_id)
         if img_entry:
             # 画像＋プロンプトをOpenAI Visionへ
             image_b64 = base64.b64encode(img_entry["data"]).decode("utf-8")
-            mime = img_entry.get("mime", "image/jpeg")
+            mime = img_entry["mime"]
             image_data_url = f"data:{mime};base64,{image_b64}"
             vision_input = [
                 {
                     "role": "user",
                     "content": [
-                {
-                    "type": "input_text",
-                            "text": (
-                                "以下の画像を: {prompt}\n"
-                                "- 箇条書きで説明\n"
-                                "- 画像内の文字は抽出して明示\n"
-                                "- 日本語で回答"
-                            ).format(prompt=user_text)
+                        {"type": "input_text", "text": user_text},
+                        {"type": "input_image", "image_url": image_data_url},
+                    ],
                 },
-                {
-                    "type": "input_image",
-                            "image_url": image_data_url  # base64 data URL をそのまま渡す
-                    }
-                    ]
-                }
             ]
             response = client.responses.create(
                 model="gpt-5.5",
                 reasoning={"effort": "low"},
+                previous_response_id=get_response_id(user_id),
                 input=vision_input,
                 stream=False,
                 store=True,
-                instructions="必ず日本語で、箇条書きで回答してください。"
+                instructions="画像と会話の文脈を踏まえて、ユーザーの質問に日本語で回答してください。"
             )
-            recent_images.pop(user_id, None)
             # ユーザIDごとに response_id を更新
             save_response_id(user_id, response.id)
+            delete_pending_image(user_id, img_entry["message_id"])
             result = response.output_text
             reply_text(event.reply_token, result)
         else:
@@ -267,14 +271,14 @@ def handle_message(event):
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    user_id = event.source.user_id
+    user_id = conversation_id(event)
     try:
-        # v3 blob API推奨
-        content = messaging_api_blob.get_message_content(message_id=event.message.id)
-        img_bytes, mime = _extract_blob_content(content)
+        content = line_bot_api.get_message_content(event.message.id)
+        img_bytes = b"".join(content.iter_content())
+        mime = (content.content_type or "image/jpeg").split(";", 1)[0].strip().lower()
         if not img_bytes:
             raise RuntimeError("画像データの取得に失敗しました。")
-        recent_images[user_id] = {"data": img_bytes, "ts": time.time(), "mime": mime}
+        save_pending_image(user_id, event.message.id, img_bytes, mime)
         reply_text(event.reply_token, "画像を受け取りました。解析したい指示をテキストで送ってください。")
     except Exception as e:
         reply_text(event.reply_token, f"画像の受信に失敗しました: {e}")
