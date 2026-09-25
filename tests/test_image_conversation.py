@@ -74,6 +74,9 @@ class ImageConversationTests(unittest.TestCase):
         self.send(worker, 'text', 'この文字を翻訳して')
         call = worker.client.responses.create.call_args.kwargs
         self.assertEqual(call['previous_response_id'], 'response-before')
+        self.assertEqual(call['context_management'], [
+            {'type': 'compaction', 'compact_threshold': 30_000},
+        ])
         self.assertEqual(call['input'][0]['content'], [
             {'type': 'input_text', 'text': 'この文字を翻訳して'},
             {'type': 'input_image', 'image_url': 'data:image/png;base64,' +
@@ -84,6 +87,9 @@ class ImageConversationTests(unittest.TestCase):
         followup = self.bot.client.responses.create.call_args.kwargs
         self.assertEqual(followup['previous_response_id'], 'response-image')
         self.assertEqual(followup['input'], 'さらに詳しく')
+        self.assertEqual(followup['context_management'], [
+            {'type': 'compaction', 'compact_threshold': 30_000},
+        ])
 
     def test_api_failure_preserves_image_and_history_for_retry(self):
         self.bot.save_response_id('user-1', 'response-before')

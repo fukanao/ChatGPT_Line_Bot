@@ -194,6 +194,10 @@ def handle_message(event):
                 input=vision_input,
                 stream=False,
                 store=True,
+                # コンテキストが3万トークンを超えたら圧縮
+                context_management=[
+                    {"type": "compaction", "compact_threshold": 30_000},
+                ],
                 instructions="画像と会話の文脈を踏まえて、ユーザーの質問に日本語で回答してください。"
             )
             # ユーザIDごとに response_id を更新
@@ -218,6 +222,10 @@ def handle_message(event):
                 input=user_text,
                 stream=False,
                 store=True,
+                # コンテキストが3万トークンを超えたら圧縮
+                context_management=[
+                    {"type": "compaction", "compact_threshold": 30_000},
+                ],
                 instructions ="""あなたは、正確さと妥当性を最優先する独立した助言者です。
 
 - ユーザーの主張や前提を、ユーザーが述べたという理由だけで正しいと扱わない。
@@ -231,13 +239,6 @@ def handle_message(event):
 ユーザーが特定の結論への同意や安心を求めていても、それを優先せず、最も妥当だと判断した結論を述べる。
 """
             )
-            # 3万トークンごとに圧縮
-            context_management=[
-                {
-                    "type": "compaction",
-                    "compact_threshold": 30_000,
-                }
-            ],
             # ユーザIDごとに response_id を更新
             save_response_id(user_id, response.id)
             result = response.output_text
